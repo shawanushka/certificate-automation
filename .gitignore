@@ -1,0 +1,19 @@
+# Sensitive files (NEVER upload)
+participants.db
+credentials.json
+token.json
+.env
+
+# Output folders
+output/
+
+# Generated files (PDFs, images)
+*.pdf
+certificate_template.png
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor / IDE settings
+.vscode/
