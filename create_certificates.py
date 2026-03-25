@@ -1,169 +1,107 @@
 import sqlite3
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-import io
-import os
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload 
+from reportlab.lib.pagesizes import A4, landscape  # <-- Added Landscape!
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-
+import io
+import os
 
 # ============================================================
-# 👇👇👇 YOUR CONTROL PANEL - CHANGE SETTINGS HERE 👇👇👇
+# 👇👇👇 YOUR CONTROL PANEL 👇👇👇
 # ============================================================
-GOOGLE_DRIVE_FOLDER_ID = '1wUJnt38ueJQgMR__QInoepQkDbuIZIwe'
+OUTPUT_FOLDER = 'GenAI_Certificates'
 DB_FILE = 'participants.db'
 TEMPLATE_FILE = 'template.pdf'
 
-# --- POSITION ---
-PAGE_WIDTH, PAGE_HEIGHT = A4
-NAME_X = PAGE_WIDTH / 2       # TRUE CENTER
-NAME_Y = 290                  # Up/Down manually adjustable
+# --- 1. POSITION ---
+NAME_X = 421  # Dead center of a landscape A4 page
+NAME_Y = 260  # <-- Moved DOWN so it doesn't overlap!
 
-# --- FONT SETTINGS ---
-CUSTOM_FONT_NAME = "AgrandirFont"  
-FONT_PATH = "fonts/Agrandir-Narrow.ttf"
+# --- 2. FONT SETTINGS ---
+try:
+    pdfmetrics.registerFont(TTFont('Pinyon', 'PinyonScript-Regular.ttf'))
+except Exception as e:
+    print("❌ ERROR: Could not find 'PinyonScript-Regular.ttf' in the folder!")
+    exit()
 
-START_FONT_SIZE = 48
-MINIMUM_FONT_SIZE = 14
-MAX_WIDTH_ALLOWED = 700       # Very wide -> prevents truncation
+FONT_NAME = "Pinyon"    
+START_FONT_SIZE = 74            
+MINIMUM_FONT_SIZE = 40          
+MAX_WIDTH_ALLOWED = 600       # <-- Gave it much more breathing room!  
 
-# --- COLOR (RGB) ---
-COLOR_R = 0.0
-COLOR_G = 0.0
-COLOR_B = 0.0
+# --- 3. COLOR SETTINGS ---
+COLOR_R = 0.08
+COLOR_G = 0.28
+COLOR_B = 0.16
 # ============================================================
 
-
-# Register custom font
-pdfmetrics.registerFont(TTFont(CUSTOM_FONT_NAME, FONT_PATH))
-
-
-def get_drive_service():
-    """Logs into Google and returns the drive service."""
-    SCOPES = ['https://www.googleapis.com/auth/drive.file']
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return build('drive', 'v3', credentials=creds)
-
-
-def create_certificate_in_memory(name):
-    """
-    Creates a PDF certificate using Title Case and auto-shrink logic.
-    """
+def create_certificate(name):
     print(f"  🎨 Drawing certificate for: {name}")
-
     name_to_print = name.strip().title()
-
     packet = io.BytesIO()
-    c = canvas.Canvas(packet, pagesize=A4)
-
-    # Set initial font + color
+    
+    # FIX: We are now using a Landscape canvas so long names don't get cut off!
+    c = canvas.Canvas(packet, pagesize=landscape(A4))
+    
     c.setFillColorRGB(COLOR_R, COLOR_G, COLOR_B)
     current_font_size = START_FONT_SIZE
-    c.setFont(CUSTOM_FONT_NAME, current_font_size)
-
-    # Measure name width
-    name_width = c.stringWidth(name_to_print, CUSTOM_FONT_NAME, current_font_size)
-
-    # Shrink only if needed
+    c.setFont(FONT_NAME, current_font_size)
+    
+    name_width = c.stringWidth(name_to_print, FONT_NAME, current_font_size)
+    
     while name_width > MAX_WIDTH_ALLOWED and current_font_size > MINIMUM_FONT_SIZE:
-        current_font_size -= 1
-        c.setFont(CUSTOM_FONT_NAME, current_font_size)
-        name_width = c.stringWidth(name_to_print, CUSTOM_FONT_NAME, current_font_size)
+        current_font_size -= 2 
+        c.setFont(FONT_NAME, current_font_size)
+        name_width = c.stringWidth(name_to_print, FONT_NAME, current_font_size)
 
-    # Draw the name perfectly centered
-    c.drawCentredString(NAME_X, NAME_Y, name_to_print)
+    c.drawCentredString(NAME_X, NAME_Y, name_to_print) 
     c.save()
     packet.seek(0)
-
-    # Merge text with template
+    
     name_sticker = PdfReader(packet)
     template_pdf = PdfReader(open(TEMPLATE_FILE, "rb"))
-
+    
     output_pdf_writer = PdfWriter()
     page = template_pdf.pages[0]
     page.merge_page(name_sticker.pages[0])
     output_pdf_writer.add_page(page)
-
-    final_pdf_in_memory = io.BytesIO()
-    output_pdf_writer.write(final_pdf_in_memory)
-    final_pdf_in_memory.seek(0)
-
-    return final_pdf_in_memory
-
+    
+    return output_pdf_writer
 
 def main():
-    print("🔑 Connecting to Google Drive...")
-    try:
-        drive_service = get_drive_service()
-    except FileNotFoundError:
-        print("❌ ERROR: Could not find 'credentials.json'!")
-        return
+    if not os.path.exists(OUTPUT_FOLDER):
+        os.makedirs(OUTPUT_FOLDER)
 
-    print("🗄️ Reading names from database...")
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-
-    try:
-        cursor.execute("SELECT full_name FROM participants WHERE status IS NULL OR status != 'Done'")
-        people = cursor.fetchall()
-    except sqlite3.OperationalError:
-        print("❌ ERROR: Run 'python upgrade_database.py' first to add the status column.")
-        return
-
+    
+    cursor.execute("SELECT full_name FROM participants WHERE status IS NULL OR status != 'Done'")
+    people = cursor.fetchall()
+    
     if not people:
         print("✅ No new participants. Add more using 'add_names.py'")
         conn.close()
         return
-
-    print(f"✅ Found {len(people)} new participants.\n")
-
+    
     for (name,) in people:
         try:
-            pdf_bytes_io = create_certificate_in_memory(name)
-
+            output_pdf_writer = create_certificate(name)
             pdf_filename = f"Certificate_{name.replace(' ', '_')}.pdf"
-            print(f"  ☁️ Uploading {pdf_filename}...")
-
-            file_metadata = {
-                'name': pdf_filename,
-                'parents': [GOOGLE_DRIVE_FOLDER_ID]
-            }
-
-            media = MediaIoBaseUpload(pdf_bytes_io, mimetype='application/pdf', resumable=True)
-
-            drive_service.files().create(
-                body=file_metadata, media_body=media, fields='id'
-            ).execute()
-
-            print(f"  ✨ Success! {name} is done.\n")
-
+            save_path = os.path.join(OUTPUT_FOLDER, pdf_filename)
+            
+            with open(save_path, "wb") as f:
+                output_pdf_writer.write(f)
+            
             update_cursor = conn.cursor()
             update_cursor.execute("UPDATE participants SET status = 'Done' WHERE full_name = ?", (name,))
             conn.commit()
-
+            
         except Exception as e:
             print(f"  ❌ Error for {name}: {e}")
 
     conn.close()
-    print("🎉 JOB COMPLETE!")
-
+    print("\n🎉 JOB COMPLETE! Check the 'GenAI_Certificates' folder on your computer.")
 
 if __name__ == '__main__':
     main()
